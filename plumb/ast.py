@@ -3,6 +3,11 @@ from fnmatch import fnmatchcase
 from typing import Protocol
 import stat
 
+import logging
+
+logger = logging.getLogger()
+logging.basicConfig()
+
 from .world import World
 
 Routable = str
@@ -33,11 +38,11 @@ class Rule:
     """
 
     label: str
-    conditions: list[Condition]
+    condition: Condition
     actions: list[Action]
 
     def route(self, world: World, value: Routable):
-        if any(c.check(world, value) for c in self.conditions):
+        if self.condition.check(world, value):
             for action in self.actions:
                 action.run(world, value)
 
@@ -62,6 +67,14 @@ class AndCondition(Condition):
 
     def check(self, world: World, value: Routable) -> bool:
         return all(c.check(world, value) for c in self.children)
+
+
+@dataclass
+class OrCondition(Condition):
+    children: tuple[Condition, ...]
+
+    def check(self, world: World, value: Routable) -> bool:
+        return any(c.check(world, value) for c in self.children)
 
 
 @dataclass

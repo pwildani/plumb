@@ -23,10 +23,12 @@ FILEMODETYPES: "dir" | "file"
 conditions: _separated{_conditionexpr, _NL}
 _conditionexpr: _atomiccondition | conjunctioncondition | notcondition
 conjunctioncondition: _atomiccondition _NL? "and"i _conditionexpr
+disjunctioncondition: _atomiccondition _NL? "or"i _conditionexpr
 notcondition: "not"i _atomiccondition
-_atomiccondition: glob | is_filemodetype
+_atomiccondition: _subcondition | glob | is_filemodetype
+_subcondition: "(" _conditionexpr ")"
 
-glob: "glob"i _glob_pat 
+glob: "glob"i _glob_pat+ 
 is_filemodetype: "is"i FILEMODETYPES
 
 actions: _separated{_action, _NL}
@@ -64,19 +66,23 @@ class Plumbing(lark.Transformer):
     def _as_tuple(self, *a) -> tuple:
         return a
 
-    conditions = _as_tuple
     actions = _as_tuple
 
     def escaped_string(self, value: str) -> str:
         return value[1:-1].replace(r"\"", '"')
 
-    def rule(self, label, conditions, actions):
-        rule = ast.Rule(label, conditions, actions)
+    def rule(self, label, condition: ast.Condition, actions: list[ast.Action]):
+        rule = ast.Rule(label, condition, actions)
         self.rules.append(rule)
         return rule
 
     def conjunctioncondition(self, *children: ast.Condition):
         return ast.AndCondition(children)
+
+    conditions = conjunctioncondition
+
+    def disjunctioncondition(self, *children: ast.Condition):
+        return ast.OrCondition(children)
 
     def notcondition(self, child):
         return ast.NotCondition(child)
@@ -84,8 +90,10 @@ class Plumbing(lark.Transformer):
     def copyto(self, dest):
         return ast.CopyToAction(dest)
 
-    def glob(self, pat):
-        return ast.GlobCondition(pat)
+    def glob(self, *pats):
+        globs: list[ast.Condition] = []
+        globs.extend(ast.GlobCondition(p) for p in pats)
+        return ast.OrCondition(tuple(globs))
 
     def stop(self):
         return ast.StopAction()
