@@ -1,3 +1,7 @@
+[project]
+name = "plumb"
+requires-python = ">=3.11"
+
 [tool.poetry]
 name = "plumb"
 version = "0.1.0"
@@ -15,3 +19,5 @@ lark = "^1.1.5"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pyright]

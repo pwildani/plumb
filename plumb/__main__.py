@@ -1,26 +1,26 @@
 import plumb as _
 
-from .grammar import parser, Plumbing
+from .grammar import parse_commands
 from .world import World
+from .routable import Routable
 from . import ast
 
 
-def parse_rules(text):
-    p = parser.parse(text)
-    rules: list[ast.Rule] = Plumbing().transform(p).children
-    return rules
-
-
-def route(rules: list[ast.Rule], args: list[str]) -> World:
-    w = World()
+def route_command_line_args(commands: list[ast.Command], args: list[str]) -> World:
+    world = World()
     for arg in args:
-        w.stop_routing = False
-
-        for r in rules:
-            r.route(w, arg)
-            if w.stop_routing:
-                break
-    return w
+        msg = Routable(
+            src="",
+            dst="",
+            data=arg,
+            original_data=arg,
+            wdir=None,
+            type="text",
+            attr={},
+        )
+        world.next_obj(msg)
+        world.route(commands, msg)
+    return world
 
 
 def main():
@@ -29,8 +29,8 @@ def main():
 
     # TODO: honor XDG_CONFIG_HOME
     with open(Path.home().joinpath(".config/plumb_rules")) as rulefd:
-        rules = parse_rules(rulefd.read())
-    w = route(rules, sys.argv[1:])
+        rules = parse_commands(rulefd.read())
+    w = route_command_line_args(rules, sys.argv[1:])
     w.run()
 
 

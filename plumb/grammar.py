@@ -4,48 +4,70 @@ from . import ast
 
 # lark.logger.setLevel(logging.DEBUG)
 
-__all__ = ["parser", "Plumbing"]
+__all__ = ["command_parser"]
 
 FILE_MODE_TYPES = sorted(ast.StatFileTypeCondition.MODE_TYPES.keys())
 FILE_MODE_GRAMMAR = f"""
 %override FILEMODETYPES: {'|'.join(f'"{t}"' for t in FILE_MODE_TYPES)}
 """
 
-parser = lark.Lark(
+
+command_parser = lark.Lark(
     grammar := r"""\
-start: _NL? rule+
+start: _NL* _command (_NL+ _command)+ _NL*
 
-rule: _label _NL conditions _NL actions _NL+
-_label: "rule"i WORD
+_command: rulecommand | _actioncommand | _varcommand | conditioncommand
 
-FILEMODETYPES: "dir" | "file"
+_unused: _varcommand | conditioncommand| _actioncommand
 
-conditions: _separated{_conditionexpr, _NL}
-_conditionexpr: _atomiccondition | conjunctioncondition | notcondition
-conjunctioncondition: _atomiccondition _NL? "and"i _conditionexpr
-disjunctioncondition: _atomiccondition _NL? "or"i _conditionexpr
-notcondition: "not"i _atomiccondition
-_atomiccondition: _subcondition | glob | is_filemodetype
-_subcondition: "(" _conditionexpr ")"
+rulecommand: "rule"i WORD
+conditioncommand: _conditionexpr
+_varcommand: _varexpr
+_actioncommand: stop | copyto
 
-glob: "glob"i _glob_pat+ 
+_conditionexpr: _atomiccondition | junctioncondition | notcondition
+_conditionexprnl: _atomiccondition | junctionconditionnl | notcondition
+junctioncondition: _atomiccondition BOOLEANOPERATION _conditionexpr
+junctionconditionnl: _atomiccondition _NL? BOOLEANOPERATION _NL? _conditionexpr
+BOOLEANOPERATION: "and"|"or"
+notcondition: "not"i (_atomiccondition)
+_atomiccondition: _condition | "(" _NL? _conditionexprnl _NL? ")"
+
+_condition: glob | is_filemodetype
+
+
+glob: "glob"i _glob_pat+
 is_filemodetype: "is"i FILEMODETYPES
 
-actions: _separated{_action, _NL}
-_action: stop | copyto
+_varexpr: setvar
+
+setvar: _varname "=" _expr
+_expr: _exprscalar
+_exprscalar: exprliteral | varref
+exprliteral: escaped_string | WORD
+varref: "$" _varname
+
+_varname: WORD
 
 copyto: "copyto"i escaped_string
 stop: "stop"i
 
 escaped_string: ESCAPED_STRING
 
-_glob_pat: escaped_string | WORD
+_glob_pat: escaped_string | BAREWORD
+
+// BAREWORD: non-whitespace text that isn't also keyword-like or things that might
+// be failed attempts at quoting.
+BAREWORD: /(?!\b(and|or|not|glob|is|rule)\b)[^"'\\\s()]+/i
+
 _regex: escaped_string | WORD
 
 WS_STRING: /[^\s\n]+/
 EMPTY_LINE: /^\s*\n/
 
 _separated{x, sep}: x (sep x)*
+
+FILEMODETYPES: "dir" | "file"
 
 %import common.NEWLINE -> _NL
 %import common (WORD, INT, WS, WS_INLINE, ESCAPED_STRING, SH_COMMENT)
@@ -55,14 +77,12 @@ _separated{x, sep}: x (sep x)*
 """
     + FILE_MODE_GRAMMAR,
     # debug=True,
+    parser="lalr",
 )
 
 
 @lark.v_args(inline=True)
-class Plumbing(lark.Transformer):
-    def __init__(self):
-        self.rules: list[ast.Rule] = []
-
+class CommandTree(lark.Transformer):
     def _as_tuple(self, *a) -> tuple:
         return a
 
@@ -71,18 +91,53 @@ class Plumbing(lark.Transformer):
     def escaped_string(self, value: str) -> str:
         return value[1:-1].replace(r"\"", '"')
 
-    def rule(self, label, condition: ast.Condition, actions: list[ast.Action]):
-        rule = ast.Rule(label, condition, actions)
-        self.rules.append(rule)
-        return rule
+    def rulecommand(self, label):
+        return ast.RuleCommand(label)
 
-    def conjunctioncondition(self, *children: ast.Condition):
-        return ast.AndCondition(children)
+    def junctioncondition(
+        self, lhs: ast.Condition, op: lark.Token, rhs: ast.Condition = None
+    ):
+        """
+        boolean logic operations
+        """
+        node = ast.AndCondition
+        match op.lower():
+            case "and":
+                node = ast.AndCondition
+            case "or":
+                node = ast.OrCondition
+        match lhs, rhs:
+            case node(lhschildren), node(rhschildren):
+                # (a and b) and (c and d)
+                assert isinstance(lhs, node)
+                lhs.children = lhschildren + rhschildren
+                return lhs
+            case node(lhschildren), _:
+                # (a and b) and c
+                assert isinstance(lhs, node)
+                lhs.children = lhschildren + (rhs,)
+                return lhs
+            case _, node(rhschildren):
+                # c and (a and b)
+                # and also the second most common case of chaining: a and b and c
+                # because the grammar is right recursive.
+                assert isinstance(rhs, node)
+                rhs.children = (lhs,) + rhschildren
+                return rhs
+            case None, None:
+                # dunno how we got here
+                return node(tuple())
+            case _, None:
+                # dunno how we got here
+                return node((lhs,))
+            case None, _:
+                # dunno how we got here
+                return node((rhs,))
+            case _:
+                # The most common case: a and b
+                return node((lhs, rhs))
 
-    conditions = conjunctioncondition
-
-    def disjunctioncondition(self, *children: ast.Condition):
-        return ast.OrCondition(children)
+    junctionconditionnl = junctioncondition
 
     def notcondition(self, child):
         return ast.NotCondition(child)
@@ -91,6 +146,9 @@ class Plumbing(lark.Transformer):
         return ast.CopyToAction(dest)
 
     def glob(self, *pats):
+        if len(pats) == 1:
+            return ast.GlobCondition(pats[0])
+
         globs: list[ast.Condition] = []
         globs.extend(ast.GlobCondition(p) for p in pats)
         return ast.OrCondition(tuple(globs))
@@ -101,3 +159,24 @@ class Plumbing(lark.Transformer):
     def is_filemodetype(self, filetype):
         assert str(filetype) in ast.StatFileTypeCondition.MODE_TYPES, filetype
         return ast.StatFileTypeCondition(filetype)
+
+    def setvar(self, var, rhs):
+        return ast.SetVariable(var, rhs)
+
+    def exprliteral(self, value):
+        return ast.ExprLiteral(value)
+
+    def varref(self, var):
+        return ast.VariableReference(var)
+
+    def conditioncommand(self, condition):
+        return ast.ConditionCommand(condition)
+
+    def start(self, *commands):
+        return commands
+
+
+def parse_commands(text) -> list[ast.Command]:
+    p = command_parser.parse(text)
+    commands: list[ast.Command] = CommandTree().transform(p)
+    return commands

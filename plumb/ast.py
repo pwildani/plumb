@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
-from typing import Protocol
 import stat
 
 import logging
@@ -9,56 +8,83 @@ logger = logging.getLogger()
 logging.basicConfig()
 
 from .world import World
-
-Routable = str
-
-
-class Action(Protocol):
-    """
-    A thing that modifies the World to make itself happen using the value.
-    """
-
-    def run(self, world: World, value: Routable) -> None:
-        ...
+from .routable import Routable
+from .util import optstr
 
 
-class Condition(Protocol):
-    """
-    A thing that checks the world or value for validity.
-    """
-
-    def check(self, world: World, value: Routable) -> bool:
-        ...
+from .aast import Command, CommandResult, Expr, Condition, Action, Value
 
 
 @dataclass
-class Rule:
+class RuleCommand(Command):
     """
     A stanza of conditions and actions to run if the conditions are true.
     """
 
     label: str
-    condition: Condition
-    actions: list[Action]
 
-    def route(self, world: World, value: Routable):
-        if self.condition.check(world, value):
-            for action in self.actions:
-                action.run(world, value)
+    def run(self, world: World, value: Routable) -> CommandResult:
+        return CommandResult.NEXT_COMMAND
 
 
 @dataclass
-class CopyToAction(Action):
+class VariableReference(Expr):
+    var: str
+
+    def eval(self, world: World, value: Routable) -> Value:
+        return world.var(self.var, None)
+
+
+@dataclass
+class ExprLiteral(Expr):
+    val: str
+
+    def eval(self, world: World, value: Routable) -> Value:
+        return self.val
+
+
+@dataclass
+class SetVariable(Action, Condition, Command):
+    var: str
+    rhs: Expr
+
+    def run(self, world: World, value: Routable) -> CommandResult:
+        world.set_var(self.var, optstr(self.rhs.eval(world, value)))
+        return CommandResult.NEXT_COMMAND
+
+    def check(self, world: World, value: Routable) -> bool:
+        world.set_var(self.var, optstr(self.rhs.eval(world, value)))
+        return True
+
+    def route(self, world: World, value: Routable) -> None:
+        world.set_var(self.var, optstr(self.rhs.eval(world, value)))
+
+
+@dataclass
+class CopyToAction(Action, Command):
     destination: str
 
     def run(self, world: World, value: Routable) -> None:
-        world.rsync[self.destination].append(value)
+        src: str | None = optstr(value.data)
+        if src is not None:
+            world.rsync[self.destination].append(src)
 
 
 @dataclass
 class StopAction(Action):
-    def run(self, world: World, value: Routable) -> None:
+    def run(self, world: World, value: Routable) -> CommandResult:
         world.stop_routing = True
+        return CommandResult.STOP
+
+
+@dataclass
+class ConditionCommand(Command):
+    condition: Condition
+
+    def run(self, world: World, value: Routable) -> CommandResult:
+        if self.condition.check(world, value):
+            return CommandResult.NEXT_COMMAND
+        return CommandResult.NEXT_RULE
 
 
 @dataclass
@@ -90,12 +116,14 @@ class GlobCondition(Condition):
     pattern: str
 
     def check(self, world: World, value: Routable) -> bool:
-        return fnmatchcase(value, self.pattern)
+        dat: str | None = optstr(value.data)
+        return dat is None or fnmatchcase(dat, self.pattern)
 
 
 @dataclass
 class StatFileTypeCondition(Condition):
     filetype: str
+
     _notsupported = lambda _: False
     MODE_TYPES = {
         "dir": stat.S_ISDIR,
@@ -112,7 +140,8 @@ class StatFileTypeCondition(Condition):
     }
 
     def check(self, world: World, value: Routable) -> bool:
-        st = world.stat_path(value)
+        pathname = world.var("file", value.data)
+        st = world.stat_path(pathname)
         if st is None:
             return False
         if is_x := self.MODE_TYPES.get(self.filetype):
