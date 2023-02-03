@@ -14,9 +14,9 @@ def bareword(s: str) -> Token:
 def test_simplest_rule():
     r = parse_commands(
         """
-    rule test
-    stop
-    """
+        rule test
+        stop
+        """
     )
     assert len(r) == 2
     assert isinstance(r[0], ast.RuleCommand)
@@ -30,10 +30,9 @@ def test_simplest_rule():
 def test_basic_commands_with_var():
     r = parse_commands(
         """
-    rule test
-    a=b
-    stop
-    """
+        rule test
+        a=b
+        stop"""
     )
     assert len(r) == 3
     assert isinstance(r[0], ast.RuleCommand)
@@ -49,9 +48,7 @@ def test_basic_commands_with_var():
 
 def test_set_var_to_str():
     r = parse_commands(
-        """
-    a="str"
-    """
+        """a=str""",
     )
     assert len(r) == 1
     assert (
@@ -60,11 +57,7 @@ def test_set_var_to_str():
 
 
 def test_set_var_to_var():
-    r = parse_commands(
-        """
-    a=$b
-    """
-    )
+    r = parse_commands("""a=$b """)
     assert len(r) == 1
     assert (
         ast.SetVariable(var=Token("WORD", "a"), rhs=ast.VariableReference("b")),
@@ -72,21 +65,13 @@ def test_set_var_to_var():
 
 
 def test_simple_glob():
-    r = parse_commands(
-        """
-    glob "*.py"
-    """
-    )
+    r = parse_commands("""glob "*.py\"""")
     assert len(r) == 1
     assert (ast.ConditionCommand(condition=(ast.GlobCondition(pattern="*.py"))),) == r
 
 
 def test_bareword_glob():
-    r = parse_commands(
-        """
-    glob py
-    """
-    )
+    r = parse_commands("""glob py""")
     assert len(r) == 1
     assert (
         ast.ConditionCommand(condition=(ast.GlobCondition(pattern=bareword("py")))),
@@ -95,8 +80,8 @@ def test_bareword_glob():
 
 def test_multi_glob_quoted():
     r = parse_commands(
-        """
-    glob "*.py" "*.pyc"
+        """\n
+    glob "*.py" "*.pyc"\n
     """
     )
     assert len(r) == 1
@@ -113,11 +98,7 @@ def test_multi_glob_quoted():
 
 
 def test_multi_glob_bare():
-    r = parse_commands(
-        """
-    glob *.py *.pyc
-    """
-    )
+    r = parse_commands("""glob *.py *.pyc""")
     assert len(r) == 1
     assert (
         ast.ConditionCommand(
@@ -132,41 +113,25 @@ def test_multi_glob_bare():
 
 
 def test_is_dir():
-    r = parse_commands(
-        """
-    is dir
-    """
-    )
+    r = parse_commands("""is dir""")
     assert len(r) == 1
     assert (ast.ConditionCommand(ast.StatFileTypeCondition("dir")),) == r
 
 
 def test_stop():
-    r = parse_commands(
-        """
-    stop
-    """
-    )
+    r = parse_commands("""stop""")
     assert len(r) == 1
     assert (ast.StopAction(),) == r
 
 
 def test_copyto():
-    r = parse_commands(
-        """
-    copyto "dest"
-    """
-    )
+    r = parse_commands(""" copyto "dest" """)
     assert len(r) == 1
     assert (ast.CopyToAction("dest"),) == r
 
 
 def test_conjunction():
-    r = parse_commands(
-        """
-    is file and is dir
-    """
-    )
+    r = parse_commands("""is file and is dir""")
     assert len(r) == 1
     assert (
         ast.ConditionCommand(
@@ -181,11 +146,7 @@ def test_conjunction():
 
 
 def test_disjunction():
-    r = parse_commands(
-        """
-    is file or is dir
-    """
-    )
+    r = parse_commands("""is file or is dir""")
     assert len(r) == 1
     assert (
         ast.ConditionCommand(
@@ -200,11 +161,7 @@ def test_disjunction():
 
 
 def test_parens():
-    r = parse_commands(
-        """
-    (is file)
-    """
-    )
+    r = parse_commands("""(is file)""")
     assert len(r) == 1
     assert (
         ast.ConditionCommand(
@@ -216,9 +173,9 @@ def test_parens():
 def test_parens_2():
     r = parse_commands(
         """
-    (is file
-    or is dir)
-    """
+        (is file
+        or is dir)
+        """
     )
     assert len(r) == 1
     assert (
@@ -236,11 +193,11 @@ def test_parens_2():
 def test_and_glob_long():
     r = parse_commands(
         """
-    (
-     glob x
-     and glob y
-    )
-    """
+        (
+         glob x
+         and glob y
+        )
+        """
     )
     assert len(r) == 1
     assert (
@@ -256,11 +213,7 @@ def test_and_glob_long():
 
 
 def test_and_glob_flat():
-    r = parse_commands(
-        """
-    glob x and glob y
-    """
-    )
+    r = parse_commands("""glob x and glob y""")
     assert len(r) == 1
     assert (
         ast.ConditionCommand(
@@ -275,11 +228,7 @@ def test_and_glob_flat():
 
 
 def test_multi_and_glob_flat():
-    r = parse_commands(
-        """
-    glob x z and glob y q
-    """
-    )
+    r = parse_commands("""glob x z and glob y q""")
     assert len(r) == 1
     assert (
         ast.ConditionCommand(
@@ -304,11 +253,7 @@ def test_multi_and_glob_flat():
 
 
 def test_multi_or_glob_flat():
-    r = parse_commands(
-        """
-    glob x z or glob y q
-    """
-    )
+    r = parse_commands("""glob x z or glob y q""")
     assert len(r) == 1
     assert (
         ast.ConditionCommand(
@@ -322,3 +267,22 @@ def test_multi_or_glob_flat():
             )
         ),
     ) == r
+
+
+def test_glob_of_var():
+    r = parse_commands("""$foo glob x""")
+    assert len(r) == 1
+    assert (ast.ConditionCommand(ast.GlobCondition(bareword("x"))),) == r
+    assert r[0].condition.datasource == ast.VariableReference(word("foo"))
+
+
+def test_inspect_all():
+    r = parse_commands("""inspect all""")
+    assert len(r) == 1
+    assert (ast.InspectAction(Token("ALL", "all")),) == r
+
+
+def test_inspect_var():
+    r = parse_commands("""inspect $foo""")
+    assert len(r) == 1
+    assert (ast.InspectAction(ast.VariableReference(word("foo"))),) == r

@@ -50,6 +50,12 @@ class World:
     def next_obj(self, obj):
         self.obj = obj
         self.init_obj_dir_vars()
+        self.vars["attr"] = ",".join(f"{k}={v}" for k, v in self.obj.attr.items())
+        self.vars["data"] = self.obj.data
+        self.vars["dst"] = self.obj.dst
+        self.vars["type"] = self.obj.type
+        self.vars["src"] = self.obj.src
+        self.vars["wdir"] = self.obj.wdir
 
     def init_obj_dir_vars(self):
         obj = self.obj
@@ -81,8 +87,7 @@ class World:
                     self.init_obj_dir_vars()
                 else:
                     self.obj.wdir = None
-            case _:
-                self.vars[key] = value
+        self.vars[key] = value
 
     def var(self, key: str, default: str | T) -> str | bytes | Path | None | T:
         assert self.obj
@@ -99,8 +104,7 @@ class World:
                 return self.obj.src
             case "wdir":
                 return self.obj.wdir
-            case _:
-                return self.vars.get(key, default)
+        return self.vars.get(key, default)
 
     def route(self, commands: Iterable[aast.Command], value: Routable):
         from .ast import RuleCommand

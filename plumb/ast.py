@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 import stat
+import re
+from typing import Any
 
 import logging
 
@@ -44,7 +46,7 @@ class ExprLiteral(Expr):
 
 
 @dataclass
-class SetVariable(Action, Condition, Command):
+class SetVariable(Action, Command):
     var: str
     rhs: Expr
 
@@ -73,7 +75,6 @@ class CopyToAction(Action, Command):
 @dataclass
 class StopAction(Action):
     def run(self, world: World, value: Routable) -> CommandResult:
-        world.stop_routing = True
         return CommandResult.STOP
 
 
@@ -117,7 +118,25 @@ class GlobCondition(Condition):
 
     def check(self, world: World, value: Routable) -> bool:
         dat: str | None = optstr(value.data)
-        return dat is None or fnmatchcase(dat, self.pattern)
+        return dat is not None and fnmatchcase(dat, self.pattern)
+
+
+@dataclass
+class RegexCondition(Condition):
+    regex: re.Pattern
+
+    def check(self, world: World, value: Routable) -> bool:
+        dat = self.get_str_data(world, value)
+        if dat is None:
+            return False
+        if m := self.regex.match(dat):
+            world.set_var("0", m.group(0))
+            for i, g in enumerate(m.groups()):
+                world.set_var(str(i + 1), g)
+            for k, g in m.groupdict().items():
+                world.set_var(k, g)
+            return True
+        return False
 
 
 @dataclass
@@ -140,10 +159,32 @@ class StatFileTypeCondition(Condition):
     }
 
     def check(self, world: World, value: Routable) -> bool:
-        pathname = world.var("file", value.data)
+        dat = self.get_path_data(world, value)
+        pathname = world.var("file", dat)
         st = world.stat_path(pathname)
         if st is None:
             return False
         if is_x := self.MODE_TYPES.get(self.filetype):
             return is_x(st.st_mode)
         return False
+
+
+@dataclass
+class InspectAction(Action):
+    arg: Any
+
+    def run(self, world: World, value: Routable) -> CommandResult:
+        from pprint import pprint
+
+        if self.arg == "all":
+            pprint(world.vars)
+        elif isinstance(expr := self.arg, Expr):
+            pprint(expr)
+            print("==>")
+            pprint(expr.eval(world, value))
+        elif isinstance(cond := self.arg, Condition):
+            pprint(cond)
+            print("==>")
+            pprint(cond.check(world, value))
+
+        return CommandResult.NEXT_COMMAND
