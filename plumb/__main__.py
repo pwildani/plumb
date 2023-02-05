@@ -1,4 +1,6 @@
 import plumb as _
+from pathlib import Path
+import os
 
 from .grammar import parse_commands
 from .world import World
@@ -9,13 +11,26 @@ from . import ast
 def route_command_line_args(commands: list[ast.Command], args: list[str]) -> World:
     world = World()
     for arg in args:
+        wdir = None  # TODO from command line args.
+        type = None  # TODO from command line args.
+
+        if wdir is None:
+            wdir = os.getcwd()
+        if wdir and type is None:
+            p = Path(wdir).joinpath(arg)
+            if p.is_file():
+                type = "file"
+            if p.is_dir():
+                type = "dir"
+        if type is None:
+            type = "text"
         msg = Routable(
             src="",
             dst="",
             data=arg,
             original_data=arg,
-            wdir=None,
-            type="text",
+            wdir=Path(wdir),
+            type=type,
             attr={},
         )
         world.next_obj(msg)

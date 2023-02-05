@@ -3,6 +3,7 @@ from fnmatch import fnmatchcase
 import stat
 import re
 from typing import Any
+import os
 
 import logging
 
@@ -64,12 +65,27 @@ class SetVariable(Action, Command):
 
 @dataclass
 class CopyToAction(Action, Command):
-    destination: str
+    destination: Expr
 
-    def run(self, world: World, value: Routable) -> None:
+    def run(self, world: World, value: Routable) -> CommandResult:
         src: str | None = optstr(value.data)
-        if src is not None:
-            world.rsync[self.destination].append(src)
+        dst = optstr(self.destination.eval(world, value))
+        if src is not None and dst is not None:
+            world.add_rsync(dst, [src])
+        return CommandResult.NEXT_COMMAND
+
+
+@dataclass
+class MoveToAction(Action, Command):
+    destination: Expr
+
+    def run(self, world: World, value: Routable) -> CommandResult:
+        src: str | None = optstr(value.data)
+        dst = optstr(self.destination.eval(world, value))
+        if src is not None and dst is not None:
+            world.add_move(dst=dst, src=src)
+
+        return CommandResult.NEXT_COMMAND
 
 
 @dataclass
@@ -114,22 +130,27 @@ class NotCondition(Condition):
 
 @dataclass
 class GlobCondition(Condition):
-    pattern: str
+    pattern: Expr
 
     def check(self, world: World, value: Routable) -> bool:
-        dat: str | None = optstr(value.data)
-        return dat is not None and fnmatchcase(dat, self.pattern)
+        dat = self.get_str_data(world, value)
+        pat = optstr(self.pattern.eval(world, value))
+        return dat is not None and pat is not None and fnmatchcase(dat, pat)
 
 
 @dataclass
 class RegexCondition(Condition):
-    regex: re.Pattern
+    pattern: Expr
 
     def check(self, world: World, value: Routable) -> bool:
         dat = self.get_str_data(world, value)
         if dat is None:
             return False
-        if m := self.regex.match(dat):
+        pat = optstr(self.pattern.eval(world, value))
+        if pat is None:
+            return False
+        regex = re.compile(pat)
+        if m := regex.match(dat):
             world.set_var("0", m.group(0))
             for i, g in enumerate(m.groups()):
                 world.set_var(str(i + 1), g)
@@ -188,3 +209,41 @@ class InspectAction(Action):
             pprint(cond.check(world, value))
 
         return CommandResult.NEXT_COMMAND
+
+
+@dataclass
+class GrepCondition(Condition):
+    pattern: Expr
+
+    def check(self, world: World, value: Routable) -> bool:
+        pat = optstr(self.pattern.eval(world, value))
+        if pat is None:
+            return False
+
+        dat = self.get_path_data(world, value)
+        if dat:
+            regex = re.compile(pat)
+            with open(dat, "rt") as fh:
+                for line in fh:
+                    if regex.search(line):
+                        return True
+        return False
+
+
+@dataclass
+class EnvironmentLookupExpr(Expr):
+    name: Expr
+
+    def eval(self, world: World, value: Routable) -> Value:
+        name = self.name.eval(world, value)
+        if (strname := optstr(name)) is not None:
+            return os.getenv(strname)
+        return None
+
+
+@dataclass
+class StringConcatExpr(Expr):
+    parts: list[Expr]
+
+    def eval(self, world: World, value: Routable) -> Value:
+        return "".join(optstr(p.eval(world, value)) or "" for p in self.parts)

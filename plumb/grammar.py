@@ -1,6 +1,7 @@
 import logging
 import lark
 from . import ast
+from typing import Type
 
 lark.logger.setLevel(logging.DEBUG)
 
@@ -18,70 +19,77 @@ start: _NL* _command ( _NL+ _command)* _NL*
 
 _command: rulecommand | _actioncommand | _varcommand | conditioncommand
 
-_unused: _varcommand | conditioncommand| _actioncommand
-
-rulecommand: "rule"i WORD
+rulecommand: "rule"i BAREWORD
 conditioncommand: _conditionexpr
 _varcommand: _varexpr
-_actioncommand: stop | copyto | inspect
+_actioncommand: stop | copyto | inspect | moveto
 
-_conditionexpr: _atomiccondition | junctioncondition | notcondition
-junctioncondition: _atomiccondition BOOLEANOPERATION _conditionexpr
-
-// junctionconditionnl, conditionexprnl: Accept NL inside parens, but otherwise identical to junctioncondition
-_conditionexprnl: (_atomiccondition | junctionconditionnl | notcondition)
-junctionconditionnl: _atomiccondition _NL? BOOLEANOPERATION _NL? _conditionexpr
+_conditionexpr: notcondition | _atomiccondition | junctioncondition
+junctioncondition: _conditionexpr BOOLEANOPERATION _conditionexpr
 
 BOOLEANOPERATION: "and"|"or"
 
-notcondition: "not"i (_atomiccondition)
+notcondition: _NOT _atomiccondition
+_NOT.1: "not"i
 
-_atomiccondition: condition | "(" _NL? _conditionexprnl _NL? ")"
+_atomiccondition: ( "(" _conditionexpr ")") | condition
 
-condition: [expr] (glob | is_filemodetype | match)
+condition: [expr] (glob | is_filemodetype | match | grep)
 
 glob: "glob"i _glob_pat+
-match: "match"i _regex
+match: "match"i fstr
+grep: "grep"i fstr
 is_filemodetype: "is"i FILEMODETYPES
 
-regex: "/" regexcontents "/"
-//!regexcontents: ( /[\w]/ | /\\\W/ | "(" regexcontents ")" | "[" ( "-" | "^" | "\\]") /[^\]]|\\\]/ "]" )* 
-regexcontents:  /x/
+ // regex: "/" _regex_contents+ "/"
 
 _varexpr: setvar
 
 setvar: _varname "=" expr
-expr: _exprscalar
-_exprscalar: exprliteral | varref
-exprliteral: escaped_string | WORD
+expr: _exprscalar | envlookup
+_exprscalar: fstr | varref | exprliteral
+exprliteral: BAREWORD
 varref: "$" _varname
 
-_varname: WORD
+envlookup: "env"i expr
+
+_varname: BAREWORD
 
 inspect: "inspect"i [ALL|expr]
 ALL: "all"i
-copyto: "copyto"i escaped_string
+copyto: "copyto"i expr
+moveto: "moveto"i expr
 stop: "stop"i
 
-escaped_string: ESCAPED_STRING
 
-_glob_pat: escaped_string | BAREWORD
+fstr: "\"" _fstr_contents* "\""
+_fstr_expr: "{" expr "}"
+_LBRACE.99: "{"
+_RBRACE.99: "}"
+_fstr_contents: (_fstr_expr | FEXPR_STRING_CHAR | escaped_char)
+FEXPR_STRING_CHAR.0: /[^\\"{}\n]+/
+
+// _regex_contents: (_fstr_expr | REGEX_STRING_CHAR| escaped_char)
+// REGEX_STRING_CHAR.0: /[^\\\/{}\n]+/
+
+escaped_char: ESCAPED_CHAR
+ESCAPED_CHAR: /\\./
+
+_glob_pat: expr
 
 // BAREWORD: non-whitespace text that isn't also keyword-like or things that might
 // be failed attempts at quoting.
-BAREWORD: /(?!\b(and|or|not|glob|is|rule)\b)[^"'\\\s()]+/i
+BAREWORD: /(?!\b(and|or|not|glob|is|rule)\b)[^\s#$"'\\\s()={}]+/i
 
-_regex: escaped_string | WORD
-
-WS_STRING: /[^\s\n]+/
-EMPTY_LINE: /^\s*\n/
+// WS_STRING: /[^\s\n]+/
+// EMPTY_LINE: /^\s*\n/
 
 _separated{x, sep}: x (sep x)*
 
 FILEMODETYPES: "dir" | "file"
 
 %import common.NEWLINE -> _NL
-%import common (WORD, INT, WS, WS_INLINE, ESCAPED_STRING, SH_COMMENT)
+%import common (WS_INLINE, ESCAPED_STRING, SH_COMMENT)
 %ignore WS_INLINE
 %ignore SH_COMMENT
 
@@ -110,12 +118,12 @@ class CommandTree(lark.Transformer):
         return ast.RuleCommand(label)
 
     def junctioncondition(
-        self, lhs: ast.Condition, op: lark.Token, rhs: ast.Condition = None
+        self, lhs: ast.Condition, op: lark.Token, rhs: ast.Condition | None = None
     ):
         """
         boolean logic operations
         """
-        node = ast.AndCondition
+        node: Type[ast.AndCondition] | Type[ast.OrCondition] = ast.AndCondition
         match op.lower():
             case "and":
                 node = ast.AndCondition
@@ -194,27 +202,75 @@ class CommandTree(lark.Transformer):
     def conditioncommand(self, condition: ast.Condition):
         return ast.ConditionCommand(condition)
 
-    def condition(self, datasource: ast.Expr | None, condition: ast.Condition):
+    def condition(
+        self, datasource: ast.Expr | None, condition: ast.Condition
+    ) -> ast.Condition:
         condition.datasource = datasource
         return condition
 
-    def match(self, regex):
+    def match(self, regex: ast.Expr) -> ast.Condition:
         return ast.RegexCondition(regex)
+
+    def grep(self, regex: ast.Expr) -> ast.Condition:
+        return ast.GrepCondition(regex)
+
+    def moveto(self, dest: ast.Expr) -> ast.Action:
+        return ast.MoveToAction(dest)
 
     def expr(self, expr):
         return expr
 
-    def regexcontents(self, *parts):
-        # TODO: dynamic regex with ${varref} parts
-        return "".join(parts)
-
-    def regex(self, pattern):
-        import re
-
-        return re.compile(pattern)
-
     def start(self, *commands):
         return commands
+
+    def envlookup(self, nameexpr):
+        return ast.EnvironmentLookupExpr(nameexpr)
+
+    def escaped_char(self, char):
+        assert char[0] == "\\"
+        return char[1]
+
+    def fstr(self, *parts):
+        fused: list[ast.Expr] = []
+        print("FSTR", parts)
+        for part in parts:
+            match part:
+                # Flatten the string bits
+                case ast.ExprLiteral(v) | lark.Token("FEXPR_STRING_CHAR", v):
+                    if fused:
+                        if isinstance(fused[-1], ast.ExprLiteral):
+                            print("FSTR EXPRFUSION", fused[-1], "+", v)
+                            fused[-1].val += v
+                            continue
+                        if isinstance(fused[-1], lark.Token):
+                            print("FSTR TOKENFUSION", fused[-1], "+", v)
+                            last: lark.Token = fused[-1]
+                            fused[-1] = ast.ExprLiteral(last + v)
+                        else:
+                            print("FSTR APPEND NEW", v)
+                            fused.append(ast.ExprLiteral(v))
+                    else:
+                        print("FSTR APPEND FIRST", v)
+                        fused.append(ast.ExprLiteral(v))
+                case ast.Expr():
+                    print("FSTR APPEND UNFUSABLE", part)
+                    fused.append(part)
+                case _:
+                    assert (
+                        False
+                    ), f"Unexpected element in string or regex literal: {part!r}"
+
+        match len(fused):
+            case 1:
+                # Nothing to concat. Skip that step
+                return fused[0]
+            case 0:
+                # empty string
+                return ast.ExprLiteral("")
+            case _:
+                return ast.StringConcatExpr(fused)
+
+    regex = fstr
 
 
 def parse_commands(text, grammarentrypoint="start") -> list[ast.Command]:

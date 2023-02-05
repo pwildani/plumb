@@ -1,7 +1,8 @@
 from collections import defaultdict
+from dataclasses import dataclass, field
 import shlex
-import os
-from typing import TypeVar, TYPE_CHECKING, Iterable
+import os.path
+from typing import TypeVar, TYPE_CHECKING, Iterable, Self
 from pathlib import Path
 
 from .routable import Routable
@@ -14,40 +15,131 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 
+@dataclass
+class Op:
+    type: str
+    args: list[str]
+
+    requires_names: list[str] = field(default_factory=list)
+    requires_op: list[Self] = field(default_factory=list)
+    provides_names: list[str] = field(default_factory=list)
+    provides_op: list[Self] = field(default_factory=list)
+
+    ready_: bool = False
+    executed: bool = False
+
+    def ready(self) -> bool:
+        if self.ready_:
+            return True
+        self.ready_ = all(op.executed for op in self.requires_op)
+        return self.ready_
+
+
 class World:
+    def add_rsync(self, dst: str, srcs: list[str]) -> Op:
+        self.rsync[dst].append(op := Op("rsync", list(srcs)))
+        op.requires_names = list(srcs)
+        if dst.endswith(os.path.sep):
+            op.provides_names = [str(Path(dst).joinpath(Path(s).name)) for s in srcs]
+        else:
+            op.provides_names = [dst]
+        self.add_op(op)
+        return op
+
+    def add_move(self, dst: str, src: str) -> Op:
+        self.move_files[dst].append(op := Op("mv", [src]))
+        op.requires_names = [src]
+        self.add_op(op)
+        return op
+
+    def add_shell(self, reqs: list[str], cmd: list[str]) -> Op:
+        self.shell_commands.append(op := Op("shell", list(cmd)))
+        op.requires_names = list(reqs)
+        self.add_op(op)
+        return op
+
+    def add_op(self, newop: Op) -> None:
+        for op in self.ops:
+            # todo: index ops by names rather than this ... O(N^3)-ish approach
+            if any(a == b for a in newop.provides_names for b in op.requires_names):
+                if newop is not op:
+                    newop.requires_op.append(op)
+                    op.provides.append(self)
+        self.ops.append(newop)
+        self.pending_ops.append(newop)
+
     def __init__(self):
-        self.rsync: defaultdict[str, list[str]] = defaultdict(list)
         self.dry_run = True
-        self.shell_commands: list[list[str]] = []
         self._stat_cache: dict[str, os.stat_result] = {}
         self.mode = aast.CommandResult.NEXT_COMMAND
 
         self.vars = {}
         self.obj: Routable | None = None
 
+        self.ops = []
+        self.pending_ops = []
+
+        self.rsync: defaultdict[str, list[Op]] = defaultdict(list)
+        self.move_files: defaultdict[str, list[Op]] = defaultdict(list)
+        self.shell_commands: list[Op] = []
+
     def run(self):
         # Consolidate rsync/copies to the same destination
-        for dest, srcs in self.rsync.items():
-            cmd = ["rsync", "-vaP", *srcs, dest]
-            self.shell_commands.append(cmd)
+        while self.pending_ops:
+            executed_ops = list()
 
-        # Run the accumulated external commands
-        if self.dry_run:
-            for cmd in self.shell_commands:
-                print(shlex.join(cmd))
-        else:
-            for cmd in self.shell_commands:
-                system.execute.the.command.notimplemented
+            # Translate ready rsyncs into shell commands
+            for dest, srcs in self.rsync.items():
+                goable = [s for s in srcs if s.ready() and not s.executed]
+                args = [x for s in goable for x in s.args]
+                cmd = ["rsync", "-vaP", *args, dest]
+                for s in goable:
+                    s.executed = True
+                    executed_ops.append(s)
+                self.add_shell(reqs=args, cmd=cmd)
+
+            # Translate ready moves into shell commands
+            for dest, srcs in self.move_files.items():
+                goable = [s for s in srcs if s.ready() and not s.executed]
+                args = [x for s in goable for x in s.args]
+                cmd = ["mv", *args, dest]
+                for s in goable:
+                    s.executed = True
+                    executed_ops.append(s)
+                self.add_shell(reqs=args, cmd=cmd)
+
+            # Run the accumulated external commands
+            if self.dry_run:
+                for cmd in self.shell_commands:
+                    if not cmd.ready() or cmd.executed:
+                        continue
+                    print(shlex.join(cmd.args))
+                    cmd.executed = True
+                    executed_ops.append(cmd)
+            else:
+                for cmd in self.shell_commands:
+                    if not cmd.ready():
+                        continue
+                    cmd.executed = True
+                    executed_ops.append(cmd)
+                    system.execute.the.command.notimplemented
+
+            trace = self.var("debugtrace", False)
+            for o in reversed(executed_ops):
+                # if trace: print(o)
+                self.pending_ops.remove(o)
 
     def stat_path(self, path: str | bytes | Path | None) -> os.stat_result | None:
         if path is None:
             return None
         assert path is not None
         if path not in self._stat_cache:
-            self._stat_cache[optstr(path)] = Path(path).stat()
+            p = optstr(path)
+            if p is not None:
+                self._stat_cache[p] = Path(p).stat()
         return self._stat_cache[optstr(path)]
 
-    def next_obj(self, obj):
+    def next_obj(self, obj: Routable) -> None:
         self.obj = obj
         self.init_obj_dir_vars()
         self.vars["attr"] = ",".join(f"{k}={v}" for k, v in self.obj.attr.items())
@@ -111,11 +203,20 @@ class World:
 
         self.mode = aast.CommandResult.NEXT_COMMAND
         for cmd in commands:
+            trace = self.var("debugtrace", False)
             match self.mode:
                 case aast.CommandResult.NEXT_COMMAND:
+                    if trace:
+                        print("RUN", cmd, end="  ")
                     self.mode = cmd.run(self, value)
+                    if trace:
+                        print("->", self.mode)
                 case aast.CommandResult.NEXT_RULE:
                     if isinstance(cmd, RuleCommand):
+                        if trace:
+                            print("RULE", cmd)
                         self.mode = cmd.run(self, value)
                 case aast.CommandResult.STOP:
+                    if trace and isinstance(cmd, RuleCommand):
+                        print("STOP", cmd)
                     break
