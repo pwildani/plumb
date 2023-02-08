@@ -232,28 +232,22 @@ class CommandTree(lark.Transformer):
 
     def fstr(self, *parts):
         fused: list[ast.Expr] = []
-        print("FSTR", parts)
         for part in parts:
             match part:
                 # Flatten the string bits
                 case ast.ExprLiteral(v) | lark.Token("FEXPR_STRING_CHAR", v):
                     if fused:
                         if isinstance(fused[-1], ast.ExprLiteral):
-                            print("FSTR EXPRFUSION", fused[-1], "+", v)
                             fused[-1].val += v
                             continue
                         if isinstance(fused[-1], lark.Token):
-                            print("FSTR TOKENFUSION", fused[-1], "+", v)
                             last: lark.Token = fused[-1]
                             fused[-1] = ast.ExprLiteral(last + v)
                         else:
-                            print("FSTR APPEND NEW", v)
                             fused.append(ast.ExprLiteral(v))
                     else:
-                        print("FSTR APPEND FIRST", v)
                         fused.append(ast.ExprLiteral(v))
                 case ast.Expr():
-                    print("FSTR APPEND UNFUSABLE", part)
                     fused.append(part)
                 case _:
                     assert (

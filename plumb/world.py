@@ -154,7 +154,7 @@ class World:
         assert obj
         dat = optstr(obj.data)
         if obj.wdir is not None and dat is not None:
-            self.set_var("dir", str(obj.wdir.joinpath(dat)))
+            self.set_var("dir", str(obj.wdir.joinpath(dat).parent))
             self.set_var("file", str(obj.wdir.joinpath(dat)))
 
     def set_var(self, key: str, value: str | None) -> None:
