@@ -63,8 +63,11 @@ def main():
 
 
 @click.group(invoke_without_command=True)
+@click.option("--dryrun", type=bool, default=False)
 @click.pass_context
-def cli(ctx: click.Context):
+def cli(ctx: click.Context, dryrun:bool):
+    ctx.ensure_object(dict)
+    ctx.obj['dry_run'] = dryrun
     if ctx.invoked_subcommand is None:
         ctx.invoke(file)
 
@@ -85,14 +88,14 @@ def check(verbose):
 @click.pass_context
 def file(ctx, files, wdir):
     rules = load_rules()
-    route_command_line_args(ctx, rules, files)
-
-    pass
+    w = route_command_line_args(ctx, rules, files)
+    w.run()
 
 
 @cli.command()
 @click.argument("target", nargs=1, type=click.Path())
-def watch(target):
+@click.pass_context
+def watch(ctx, target):
     rules = load_rules()
     # on rule file updates: load rules
     # on target dir subtree modification, route new paths
@@ -119,6 +122,7 @@ def watch(target):
         # on_moved
         def on_created(self, event: watchdog.events.FileCreatedEvent):
             world = World()
+            world.dry_run = ctx.obj['dry_run']
             world = route_file(world, rules, event.src_path)
             world.run()
 

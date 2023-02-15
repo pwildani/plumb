@@ -4,6 +4,7 @@ import shlex
 import os.path
 from typing import TypeVar, TYPE_CHECKING, Iterable, Self
 from pathlib import Path
+from subprocess import run
 
 from .routable import Routable
 from .util import optstr
@@ -122,7 +123,9 @@ class World:
                         continue
                     cmd.executed = True
                     executed_ops.append(cmd)
-                    system.execute.the.command.notimplemented
+                    #system.execute.the.command.notimplemented
+                    print(shlex.join(cmd.args))
+                    run(cmd.args)
 
             trace = self.var("debugtrace", False)
             for o in reversed(executed_ops):
@@ -136,7 +139,10 @@ class World:
         if path not in self._stat_cache:
             p = optstr(path)
             if p is not None:
-                self._stat_cache[p] = Path(p).stat()
+                try:
+                    self._stat_cache[p] = Path(p).stat()
+                except FileNotFoundError:
+                    self._stat_cache[optstr(path)] = None
         return self._stat_cache[optstr(path)]
 
     def next_obj(self, obj: Routable) -> None:
