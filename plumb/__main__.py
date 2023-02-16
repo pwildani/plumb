@@ -43,6 +43,7 @@ def route_command_line_args(
     ctx, commands: list[ast.Command], args: list[str] | list[Path]
 ) -> World:
     world = World()
+    world.dry_run = ctx.obj['dry_run']
     for arg in args:
         route_file(world, commands, arg)
     return world
