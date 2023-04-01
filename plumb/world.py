@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 import shlex
 import os.path
 from typing import TypeVar, TYPE_CHECKING, Iterable, Self
+from typing import Generator
 from pathlib import Path
 from subprocess import run
 
@@ -84,6 +85,14 @@ class World:
         self.move_files: defaultdict[str, list[Op]] = defaultdict(list)
         self.shell_commands: list[Op] = []
 
+        import weakref, io
+        from . import ast
+
+        self.greps: weakref.WeakKeyDictionary[
+            "ast.GrepCondition", dict[Path, bool]
+        ] = weakref.WeakKeyDictionary({g: {} for g in ast.greps})
+        self.reads: dict[Path, tuple[io.IOBase, Generator[bool, bytes, None]]] = {}
+
     def run(self):
         # Consolidate rsync/copies to the same destination
         while self.pending_ops:
@@ -128,7 +137,8 @@ class World:
 
             trace = self.var("debugtrace", False)
             for o in reversed(executed_ops):
-                if trace: print("DONE", o)
+                if trace:
+                    print("DONE", o)
                 self.pending_ops.remove(o)
 
     def stat_path(self, path: str | bytes | Path | None) -> os.stat_result | None:
@@ -145,6 +155,16 @@ class World:
         return self._stat_cache[optstr(path)]
 
     def next_obj(self, obj: Routable) -> None:
+        # Reset any file reads and pre-computed greps. (files can change
+        # between object routings, but are assumed to not change in the middle
+        # of routing an object.)
+        for g in self.greps.keys():
+            self.greps[g] = {}
+        while self.reads:
+            _, (fh, chk) = self.reads.popitem()
+            chk.close()
+            fh.close()
+
         self.obj = obj
         self.init_obj_dir_vars()
         self.vars["attr"] = ",".join(f"{k}={v}" for k, v in self.obj.attr.items())

@@ -220,10 +220,8 @@ class InspectAction(Action):
 import weakref
 from pathlib import Path
 
-greps: weakref.WeakKeyDictionary[
-    "GrepCondition", dict[Path, bool]
-] = weakref.WeakKeyDictionary()
-# TODO: reset greps.values on completion of a message, to avoid a memory leak in daemon mode.
+
+greps: weakref.WeakSet["GrepCondition"] = weakref.WeakSet()
 
 
 @dataclass
@@ -231,21 +229,22 @@ class GrepCondition(Condition):
     pattern: Expr
 
     def __post_init__(self):
-        greps[self] = {}
+        greps.add(self)
 
     def __hash__(self):
         return id(self)
 
-    def _check_all(self, dat: Path) -> Generator[bool, bytes, None]:
+    def _check_all(self, world: World, dat: Path) -> Generator[bool, bytes, None]:
         """
         Arange to run all registered greps over the target, so we only have to
         read each input file once, regardless of the number of greps.
         """
         regexen = {}
-        for g in greps.keys():
+        for g in greps:
             if (c := as_constant(g.pattern)) is not None:
-                p = re.compile(c.encode())
-                regexen[g] = p
+                if dat not in world.greps[g]:
+                    p = re.compile(c.encode())
+                    regexen[g] = p
 
         try:
             while True:
@@ -253,14 +252,15 @@ class GrepCondition(Condition):
                 hit = set()
                 for g, p in regexen.items():
                     if p.search(line):
-                        greps[g][dat] = True
+                        world.greps[g][dat] = True
                         hit.add(g)
                 for g in hit:
                     del regexen[g]
         except GeneratorExit:
             for g, p in regexen.items():
-                if dat not in greps[g]:
-                    greps[g][dat] = False
+                if g in world.greps:  # can hit this during system teardown
+                    if dat not in world.greps[g]:
+                        world.greps[g][dat] = False
 
     def check(self, world: World, value: Routable) -> bool:
         pat = optstr(self.pattern.eval(world, value))
@@ -269,29 +269,65 @@ class GrepCondition(Condition):
 
         dat = self.get_path_data(world, value)
         if dat:
-            if dat in greps[self]:
-                return greps[self][dat]
-            regex = re.compile(pat.encode())
-            chk = self._check_all(dat)
-            next(chk)  # run initialization code
-            with open(dat, "rb") as fh:
-                print("OPEN", dat)
-                # TODO: find / write a regex over stream to avoid arbitrarily
-                # breaking binary files at newlines.
-                # https://github.com/nitely/regexy, maybe?
-                for line in fh:
-                    if regex is not None and regex.search(line):
-                        greps[self][dat] = True
-                        regex = None
-                    if chk is not None:
-                        if not chk.send(line):
-                            chk = None
-                else:
-                    greps[self][dat] = False
-            if chk is not None:
-                chk.close()
+            # If we've already processed this grep for this file, use the cached result.
+            if dat in world.greps[self]:
+                return world.greps[self][dat]
 
-            return greps[self][dat]
+            regex = None
+            if as_constant(self.pattern) is None:
+                regex = re.compile(pat.encode())
+
+            if dat in world.reads:
+                # If we have a read in progress for this path, resume it.
+                fh, chk = world.reads[dat]
+            else:
+                # Otherwise, set up to run all greps in parallel over this file.
+                chk = self._check_all(world, dat)
+                next(chk)  # run initialization code
+                fh = open(dat, "rb")
+                trace = world.var("debugtrace", False)
+                if trace:
+                    print("OPEN", dat)
+
+            # TODO: find / write a regex over stream to avoid arbitrarily
+            # breaking binary files at newlines without also reading multi GB files into ram.
+            # https://github.com/nitely/regexy, maybe?
+            for line in fh:
+                if regex is not None and regex.search(line):
+                    world.greps[self][dat] = True
+                    regex = None
+                if chk is not None:
+                    if not chk.send(line):
+                        chk.close()
+                        chk = None
+                if regex is None and chk is None:
+                    # Both this dynamic pattern and all static patterns are found.
+                    fh.close()
+                    if dat in world.reads:
+                        del world.reads[dat]
+                    break
+
+                if dat in world.greps[self]:
+                    # Hit for this grep (either in chk for static patterns or
+                    # regex for dynamic patterns). Save state to resume if
+                    # other greps are consulted, but early exit for now.
+                    if chk is not None:
+                        world.reads[dat] = (fh, chk)
+                        chk = None
+                    break
+            else:
+                # We finished the file. Mark that we didn't find a match for
+                # this grep (because no early exit) AND we didn't find a match for any other pending
+                # greps (by closing chk)
+                if regex is not None:
+                    world.greps[self][dat] = False
+                fh.close()
+                if chk is not None:
+                    chk.close()
+                if dat in world.reads:
+                    del world.reads[dat]
+
+            return world.greps[self][dat]
 
         return False
 
