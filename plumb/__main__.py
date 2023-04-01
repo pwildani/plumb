@@ -43,7 +43,7 @@ def route_command_line_args(
     ctx, commands: list[ast.Command], args: list[str] | list[Path]
 ) -> World:
     world = World()
-    world.dry_run = ctx.obj['dry_run']
+    world.dry_run = ctx.obj["dry_run"]
     for arg in args:
         route_file(world, commands, arg)
     return world
@@ -66,9 +66,9 @@ def main():
 @click.group(invoke_without_command=True)
 @click.option("--dryrun", type=bool, default=False)
 @click.pass_context
-def cli(ctx: click.Context, dryrun:bool):
+def cli(ctx: click.Context, dryrun: bool):
     ctx.ensure_object(dict)
-    ctx.obj['dry_run'] = dryrun
+    ctx.obj["dry_run"] = dryrun
     if ctx.invoked_subcommand is None:
         ctx.invoke(file)
 
@@ -123,7 +123,7 @@ def watch(ctx, target):
         # on_moved
         def on_created(self, event: watchdog.events.FileCreatedEvent):
             world = World()
-            world.dry_run = ctx.obj['dry_run']
+            world.dry_run = ctx.obj["dry_run"]
             world = route_file(world, rules, event.src_path)
             world.run()
 

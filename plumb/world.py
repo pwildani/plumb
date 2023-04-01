@@ -123,13 +123,12 @@ class World:
                         continue
                     cmd.executed = True
                     executed_ops.append(cmd)
-                    #system.execute.the.command.notimplemented
                     print(shlex.join(cmd.args))
                     run(cmd.args)
 
             trace = self.var("debugtrace", False)
             for o in reversed(executed_ops):
-                # if trace: print(o)
+                if trace: print("DONE", o)
                 self.pending_ops.remove(o)
 
     def stat_path(self, path: str | bytes | Path | None) -> os.stat_result | None:
