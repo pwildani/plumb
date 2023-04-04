@@ -35,10 +35,17 @@ _NOT.1: "not"i
 _atomiccondition: ( "(" _conditionexpr ")") | condition
 
 condition: [expr] (glob | is_filemodetype | match | grep)
+condition_modifier: "(" _condition_args_list ")"
+_condition_args_list: _separated{condition_arg, ","}
+condition_arg: LT scaled_integer
+LT: "<"
+UNITSCALE: /B|KB|MB|GB|KIB|MIB|GIB/i
+scaled_integer: INTEGER [UNITSCALE]
+INTEGER: /[0-9_]+/
 
 glob: "glob"i _glob_pat+
 match: "match"i fstr
-grep: "grep"i fstr
+grep: "grep"i [condition_modifier] fstr
 is_filemodetype: "is"i FILEMODETYPES
 
  // regex: "/" _regex_contents+ "/"
@@ -110,6 +117,29 @@ class CommandTree(lark.Transformer):
         return a
 
     actions = _as_tuple
+    condition_modifier = _as_tuple
+    condition_arg = _as_tuple
+
+    def scaled_integer(self, value: str, scale: str) -> int:
+        val = int(value.replace("_", ""))
+        match scale.lower():
+            # Don't care about bits vs bytes. It's all bytes.
+            case "gi" | "gib":
+                return val * 1_073_741_824
+            case "g" | "gb":
+                return val * 1_000_000_000
+            case "mi" | "mib":
+                return val * 1_048_576
+            case "m" | "mb":
+                return val * 1_000_000
+            case "ki" | "kib":
+                return val * 1024
+            case "k" | "kb":
+                return val * 1000
+            case "b" | None:
+                return val
+            case _:
+                raise ValueError("Unknown integer scale {scale!r}")
 
     def escaped_string(self, value: str) -> str:
         return value[1:-1].replace(r"\"", '"')
@@ -211,8 +241,8 @@ class CommandTree(lark.Transformer):
     def match(self, regex: ast.Expr) -> ast.Condition:
         return ast.RegexCondition(regex)
 
-    def grep(self, regex: ast.Expr) -> ast.Condition:
-        return ast.GrepCondition(regex)
+    def grep(self, modifier: ast.Expr, regex: ast.Expr) -> ast.Condition:
+        return ast.GrepCondition(modifier, regex)
 
     def moveto(self, dest: ast.Expr) -> ast.Action:
         return ast.MoveToAction(dest)

@@ -112,9 +112,14 @@ Named groups are in `$match_<name>`.
 ### grep
 ```
 grep "regex-pattern"
+grep(< bytecount scale) "regex-pattern"
 ```
 Check if the *contents* of the path named by data match the given regular expression.
 See `pydoc3 re` for syntax.
+
+If (< bytecount scale) is specified, and bytecount is a decimal integer and
+scale is not specified or one of b, kb,kib,mb,mib,gb,gib, limit the portion of
+the file specified to those bytes.
 
 
 ## Actions

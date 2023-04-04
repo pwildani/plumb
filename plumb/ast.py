@@ -1,8 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 import stat
 import re
-from typing import Any, Generator
+from typing import Any, Generator, Optional
 import os
 
 import logging
@@ -226,38 +226,106 @@ greps: weakref.WeakSet["GrepCondition"] = weakref.WeakSet()
 
 @dataclass
 class GrepCondition(Condition):
+    condition_args: ...
     pattern: Expr
+
+    from_offset: Optional[int] = field(init=False, default=None)
+    to_offset: Optional[int] = field(init=False, default=None)
 
     def __post_init__(self):
         greps.add(self)
+        self.from_offset, self.to_offset = self._range()
+
+    def _range(self):
+        low = None
+        high = None
+        if self.condition_args is None:
+            return low, high
+
+        for x in self.condition_args:
+            match x[0]:
+                case "<":
+                    if high is None or high < x[1]:
+                        high = x[1]
+                case ">":
+                    if low is None or low > x[1]:
+                        low = x[1]
+        return (low, high)
 
     def __hash__(self):
         return id(self)
+
+    def _matcher(self, p: re.Pattern) -> Generator[tuple[bool, bool], bytes, None]:
+        seen_bytes = 0
+        try:
+            hit = False
+            done = False
+            while True:
+                done = self.to_offset is None or bool(seen_bytes > self.to_offset)
+                line = yield hit, done
+
+                if self.from_offset is not None:
+                    if (
+                        self.from_offset < seen_bytes
+                        and seen_bytes + len(line) < self.from_offset
+                    ):
+                        # Partial offset into this chunk. Skip a bit into it.
+                        inset = self.from_offset - seen_bytes
+                        line = line[inset:]
+                        seen_bytes += inset
+                        print("INSET")
+
+                if (self.from_offset is None or seen_bytes <= self.from_offset) and (
+                    self.to_offset is None or self.to_offset > seen_bytes
+                ):
+                    end = (
+                        -1
+                        if self.to_offset is None
+                        else 1 + self.to_offset - seen_bytes
+                    )
+                    seen_bytes += len(line)
+                    # Avoid searching past to_offset
+                    if end >= 0 and len(line) > end:
+                        line = line[:end]
+                    match = p.search(line)
+                    hit = bool(match)
+        except GeneratorExit:
+            pass
 
     def _check_all(self, world: World, dat: Path) -> Generator[bool, bytes, None]:
         """
         Arange to run all registered greps over the target, so we only have to
         read each input file once, regardless of the number of greps.
         """
-        regexen = {}
+        regexen: dict[GrepCondition, Generator[tuple[bool, bool], bytes, None]] = {}
         for g in greps:
             if (c := as_constant(g.pattern)) is not None:
                 if dat not in world.greps[g]:
                     p = re.compile(c.encode())
-                    regexen[g] = p
+                    m = regexen[g] = g._matcher(p)
+                    next(m)
 
+        misses = set()
         try:
             while True:
                 line = yield bool(len(regexen))
-                hit = set()
+                decided = set()
                 for g, p in regexen.items():
-                    if p.search(line):
+                    matched, done = p.send(line)
+                    if matched:
+                        # matched the target.
                         world.greps[g][dat] = True
-                        hit.add(g)
-                for g in hit:
+                        decided.add(g)
+                    elif done:
+                        # out of byte range.
+                        misses.add(g)
+                        world.greps[g][dat] = False
+                        decided.add(g)
+                for g in decided:
                     del regexen[g]
         except GeneratorExit:
-            for g, p in regexen.items():
+            # End of file. Mark all pending greps as not found
+            for g in list(regexen.keys()) + list(misses):
                 if g in world.greps:  # can hit this during system teardown
                     if dat not in world.greps[g]:
                         world.greps[g][dat] = False
@@ -273,9 +341,11 @@ class GrepCondition(Condition):
             if dat in world.greps[self]:
                 return world.greps[self][dat]
 
-            regex = None
+            matcher = None
             if as_constant(self.pattern) is None:
-                regex = re.compile(pat.encode())
+                # constant patterns are handled by check all. nonconstants are handled here.
+                matcher = self._matcher(re.compile(pat.encode()))
+                next(matcher)
 
             if dat in world.reads:
                 # If we have a read in progress for this path, resume it.
@@ -293,14 +363,17 @@ class GrepCondition(Condition):
             # breaking binary files at newlines without also reading multi GB files into ram.
             # https://github.com/nitely/regexy, maybe?
             for line in fh:
-                if regex is not None and regex.search(line):
-                    world.greps[self][dat] = True
-                    regex = None
+                if matcher is not None:
+                    matched, done = matcher.send(line)
+                    if matched:
+                        world.greps[self][dat] = True
+                    if matched or done:
+                        matcher = None
                 if chk is not None:
                     if not chk.send(line):
                         chk.close()
                         chk = None
-                if regex is None and chk is None:
+                if matcher is None and chk is None:
                     # Both this dynamic pattern and all static patterns are found.
                     fh.close()
                     if dat in world.reads:
@@ -309,7 +382,7 @@ class GrepCondition(Condition):
 
                 if dat in world.greps[self]:
                     # Hit for this grep (either in chk for static patterns or
-                    # regex for dynamic patterns). Save state to resume if
+                    # matcher for dynamic patterns). Save state to resume if
                     # other greps are consulted, but early exit for now.
                     if chk is not None:
                         world.reads[dat] = (fh, chk)
@@ -319,7 +392,7 @@ class GrepCondition(Condition):
                 # We finished the file. Mark that we didn't find a match for
                 # this grep (because no early exit) AND we didn't find a match for any other pending
                 # greps (by closing chk)
-                if regex is not None:
+                if matcher is not None:
                     world.greps[self][dat] = False
                 fh.close()
                 if chk is not None:

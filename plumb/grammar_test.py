@@ -308,7 +308,22 @@ def test_match():
 def test_grep():
     r = parse_commands("""grep "x" """)
     assert len(r) == 1
-    assert (ast.ConditionCommand(ast.GrepCondition(litstr("x"))),) == r
+    assert (ast.ConditionCommand(ast.GrepCondition(None, litstr("x"))),) == r
+
+
+def test_limited_grep():
+    r = parse_commands("""grep(< 100 kB) "x" """)
+    assert len(r) == 1
+    import lark
+
+    assert (
+        ast.ConditionCommand(
+            ast.GrepCondition(
+                ((Token("LT", "<"), 100_000),),
+                litstr("x"),
+            )
+        ),
+    ) == r
 
 
 def test_is_dir():
